@@ -16,9 +16,12 @@ class UserAdmin
 
     private $connection;
 
+    //private $villages; //pole s městy, která jsou v databázi
+
     public function __construct()
     {
-        $this->connection = new PDO("mysql:host=localhost;dbname=database_ulov_domov", 'root', '', $this->settings);
+        $this->connection = new PDO("mysql:host=localhost;dbname=database_ulov_domov", 'root', '', $this->settings); // pro vyzkoušení
+        //$this->villages = new village();
     }
 
     /**
@@ -27,7 +30,15 @@ class UserAdmin
      */
     public function set(string $user, array $cityRightsArray)
     {
-        $villiges = [1 => 'Praha', 2 => 'Brno'];
+        $villiges = [1 => 'Praha', 2 => 'Brno']; //zde bych měl pole měst z třídy village
+        $query = $this->connection->prepare('
+            SELECT *
+            FROM `user_admin`
+            WHERE `user_admin`.`first_name` = ?
+        ');
+        $params = array($user);
+        $query->execute($params);
+        if($query->fetchAll()) return; // ošetření zda už je v databázi
         $query = $this->connection->prepare('
             INSERT INTO `user_admin` (`first_name`)
             VALUES (?);'
@@ -35,22 +46,22 @@ class UserAdmin
         $params = array($user);
         $query->execute($params);
         $userId = $this->connection->lastInsertId();
-        $addressBookRight = $cityRightsArray['addressbook'];
+        $adressBookRight = $cityRightsArray['adressbook'];
         $searchRight = $cityRightsArray['search'];
-        if (!(in_array(true, $addressBookRight))) $addressBookRight = array_map(function ($x) {
+        if (!(in_array(true, $adressBookRight))) $adressBookRight = array_map(function ($x) {
             return true;
-        }, $addressBookRight);
+        }, $adressBookRight);
         if (!(in_array(true, $searchRight))) $searchRight = array_map(function ($x) {
             return true;
         }, $searchRight);
         foreach ($villiges as $key => $village) {
-            if (!($searchRight[$key] === false && $addressBookRight[$key] === false))
+            if (!($searchRight[$key] === false && $adressBookRight[$key] === false))
             {
                 $query = $this->connection->prepare('
             INSERT INTO `user_village` (`user_id`, `village_id`, `search_right`, `adress_right`)
             VALUES (?, ?, ?, ?);'
                 );
-                $params = array($userId, $key, $searchRight[$key], $addressBookRight[$key]);
+                $params = array($userId, $key, $searchRight[$key], $adressBookRight[$key]);
                 $query->execute($params);
             }
         }
@@ -58,8 +69,80 @@ class UserAdmin
 
     /**
      * @param string $user
+     */
+    public function addUser(string $user)
+    {
+        $villagesCount = 2; // normálně count($villages) podle pole měst z třídy village
+        $arrayOfRights = array('adressbook' => array(), 'search' => array());
+        for($i = 1; $i <= $villagesCount; $i++){
+            $arrayOfRights['adressbook'][$i] = true;
+            $arrayOfRights['search'][$i] = true;
+        }
+        $this->set($user, $arrayOfRights);
+    }
+
+    /**
+     * @param string $user
+     * @param string $city
      * @param int $right
-     * @return bool
+     * @param bool $value
+     */
+    public function changeUsersRight(string $user, string $city, int $right, bool $value)
+    {
+        if($right)
+        {
+            $query = $this->connection->prepare('
+        UPDATE `user_village`
+        JOIN `user_admin` ON `user_admin`.`id` = `user_village`.`user_id`
+        JOIN `village` ON `village`.`id` = `user_village`.`village_id`             
+        SET `user_village`.`search_right` = ?
+        WHERE `user_admin`.`first_name` = ? AND `village`.`name` = ?;
+        ');
+            $params = array($value, $user, $city);
+            $query->execute($params);
+        }
+        else
+        {
+            $query = $this->connection->prepare('
+        UPDATE `user_village`
+        JOIN `user_admin` ON `user_admin`.`id` = `user_village`.`user_id`
+        JOIN `village` ON `village`.`id` = `user_village`.`village_id`             
+        SET `user_village`.`adress_right` = ?
+        WHERE `user_admin`.`first_name` = ? AND `village`.`name` = ?;
+        ');
+            $params = array($value, $user, $city);
+            $query->execute($params);
+        }
+        /**
+         * tato sekvence kódu smaže řádek v user_village v případě, že uživatel nemá práva po změně
+         */
+        $query = $this->connection->prepare('
+        DELETE `user_village` FROM `user_village`
+        INNER JOIN `user_admin` on `user_admin`.`id` = `user_village`.`user_id`
+        WHERE `user_admin`.`first_name` = ? AND `user_village`.`adress_right` = 0 AND `user_village`.`search_right` = 0 ;
+        ');
+        $params = array($user);
+        $query->execute($params);
+        /**
+         * maže osobu z tabulky user_admin pokud již nemá žádná práva
+         */
+        $query = $this->connection->prepare('
+        DELETE `user_admin` FROM `user_admin`
+        INNER JOIN `user_vilage` ON `user_village`.`user_id` = `user_admin`.`id`
+        WHERE `user_admin`.`first_name` = ? AND ( SELECT COUNT(*) 
+                                                  FROM `user_village`
+                                                  INNER JOIN `user_admin` ON `user_admin`.`id` = `user_village`.`user_id`
+                                                  WHERE `user_admin`.`first_name` = ?;
+                                                  ) = 0;
+        ');
+        $params = array($user, $user);
+        $query->execute($params);
+    }
+
+    /**
+     * @param string $user
+     * @param int $right
+     * @return array
      */
     public function get(string $user, int $right)
     {
@@ -75,7 +158,7 @@ class UserAdmin
         }
         else {
             $query = $this->connection->prepare('
-            SELECT *
+            SELECT `village`.`name`
             FROM `user_village`
             JOIN `user_admin` ON `user_admin`.`id` = `user_village`.`user_id`
             JOIN `village` ON `village`.`id` = `user_village`.`village_id`
@@ -88,7 +171,3 @@ class UserAdmin
         return $query->fetchAll();
     }
 }
-
-//$x = new UserAdmin();
-//$x->set('Petu', [ 'addressbook' => [ 1 => true, 2 => false ] , 'search' => [ 1 => false, 2 => false ] ]);
-//var_dump($x->get('Petu', 0));
